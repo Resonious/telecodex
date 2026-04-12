@@ -63,7 +63,13 @@ class Bot
           next
         end
 
-        bot.api.send_chat_action(chat_id:, action: "typing")
+        Thread.new do
+          loop do
+            bot.api.send_chat_action(chat_id:, action: "typing")
+            sleep 4.5
+            break if @codex_pid.nil?
+          end
+        end
 
         stop_codex
         start_codex(message.text) do |reply|
@@ -74,8 +80,6 @@ class Bot
   end
 
   def stop_telegram_bot
-    # TODO: this puts never surfaces even when called
-    STDERR.puts "Stopping #{@bot.inspect}"
     @bot.stop
   end
 
@@ -95,22 +99,43 @@ class Bot
       @codex_pid = pid
 
       lines = []
+      codex_output = []
       begin
-        stdout.each { |line| lines << line }
+        state = :waiting_for_session_id
+
+        stdout.each do |line|
+          lines << line
+
+          case state
+          when :waiting_for_session_id
+            if line.include?(SESSION_ID_INDICATOR)
+              session_id = line.gsub(SESSION_ID_INDICATOR, "").gsub(/[^-\w]/, "")
+
+              if last_session_id.nil? || (session_id && session_id != last_session_id)
+                @state.session_ids_per_dir[Dir.pwd] = session_id
+                @state.save
+              end
+
+              state = :waiting_for_codex
+            end
+          when :waiting_for_codex
+            if line == "\e[35m\e[3mcodex\e[0m\e[0m\r\n"
+              codex_output = []
+              state = :collecting_codex_output
+            end
+          when :collecting_codex_output
+            if line.start_with?("\e")
+              block.call codex_output.join.force_encoding("UTF-8")
+              state = :waiting_for_codex
+            else
+              codex_output << line
+            end
+          end
+        end
       rescue Errno::EIO
-      end
-
-      output_start = lines.index { |l| l == "\e[35m\e[3mcodex\e[0m\e[0m\r\n" } + 1
-      output = lines[output_start..-3].join
-
-      session_id = lines
-        .find { |l| l.start_with?(SESSION_ID_INDICATOR) }
-        .gsub(SESSION_ID_INDICATOR, "")
-        .gsub(/[^-\w]/, "")
-
-      if session_id && session_id != last_session_id
-        @state.session_ids_per_dir[Dir.pwd] = session_id
-        @state.save
+      rescue => error
+        STDERR.puts "#{error.class} #{error.message}\n#{error.backtrace.join("\n")}"
+        block.call "Sorry, internal error: #{error.class} #{error.message}"
       end
 
       Process.wait(pid)
@@ -118,10 +143,10 @@ class Bot
       @codex_pid = nil
 
       if exit_code != 0
-        return "Exited with #{exit_code}.\n#{lines.join}"
+        STDERR.puts lines.join
+        STDERR.puts "CODEX EXITED WITH #{exit_code}"
+        block.call "Exited with #{exit_code}."
       end
-
-      block.call output
     end
   end
 
@@ -143,15 +168,11 @@ class Bot
       # TODO: respond to jsonrpc for list tools, and for tool call
     end
 
-    Signal.trap("INT") { mcp_server.shutdown }
-
     @mcp_server = mcp_server
     mcp_server.start
   end
 
   def stop_mcp_server
-    # TODO: this puts never surfaces even when called
-    STDERR.puts "Stopping #{@mcp_server.inspect}"
     @mcp_server.shutdown
   end
 end
@@ -163,19 +184,34 @@ end
 case ARGV
 in ["test"]
   bot = Bot.new
-  puts bot.start_codex "Remind me what I last asked"
+  thread = bot.start_codex "Give me a bullet point list of 5 orange things" do |reply|
+    puts reply
+  end
+  thread.join
 
 in ["start"] # TODO: directory and bot token in args??
   bot = Bot.new
   threads = []
   threads << Thread.new { bot.start_telegram_bot }
   threads << Thread.new { bot.start_mcp_server }
+
+  stopping = false
   Signal.trap("INT") do
+    if stopping
+      threads.each(&:kill)
+      puts "Exiting now"
+      next
+    end
+
+    stopping = true
+    Thread.new do
+      sleep 1
+      puts "Stopping gracefully"
+    end
+
     bot.stop_codex
     bot.stop_telegram_bot
     bot.stop_mcp_server
-    threads.each(&:kill)
-    # TODO: why does the app never terminate after this...
   end
   threads.each(&:join)
 
