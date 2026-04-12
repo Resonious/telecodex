@@ -28,8 +28,11 @@ State = Struct.new(:paired_user_ids, :pairing_codes, :session_ids_per_dir) do
 end
 
 class Bot
-  def initialize
+  attr_reader :dir
+
+  def initialize(dir = Dir.pwd)
     @state = State.load
+    @dir = dir
   end
 
   def new_pairing_code
@@ -90,7 +93,7 @@ class Bot
         "--dangerously-bypass-approvals-and-sandbox",
         "exec",
       ]
-      if (last_session_id = @state.session_ids_per_dir[Dir.pwd])
+      if (last_session_id = @state.session_ids_per_dir[dir])
         args += ["resume", last_session_id]
       end
       args << prompt
@@ -112,7 +115,7 @@ class Bot
               session_id = line.gsub(SESSION_ID_INDICATOR, "").gsub(/[^-\w]/, "")
 
               if last_session_id.nil? || (session_id && session_id != last_session_id)
-                @state.session_ids_per_dir[Dir.pwd] = session_id
+                @state.session_ids_per_dir[dir] = session_id
                 @state.save
               end
 
@@ -158,6 +161,11 @@ class Bot
     @codex_pid = nil
   end
 
+  # NOTE: this was an idea from the beginning that turned out to not be necessary.
+  # For now, we can stream in all codex chats as Telegram chats without an MCP server.
+  #
+  # That said, the streaming is pretty noisy sometimes so might not be good for
+  # long running tasks.
   def start_mcp_server
     mcp_server = WEBrick::HTTPServer.new(Port: 4321)
 
@@ -173,7 +181,7 @@ class Bot
   end
 
   def stop_mcp_server
-    @mcp_server.shutdown
+    @mcp_server&.shutdown
   end
 end
 
@@ -181,19 +189,12 @@ end
 # Command line entrypoint
 ##########################################################
 
-case ARGV
-in ["test"]
-  bot = Bot.new
-  thread = bot.start_codex "Give me a bullet point list of 5 orange things" do |reply|
-    puts reply
-  end
-  thread.join
-
-in ["start"] # TODO: directory and bot token in args??
+start = proc do |dir|
   bot = Bot.new
   threads = []
   threads << Thread.new { bot.start_telegram_bot }
-  threads << Thread.new { bot.start_mcp_server }
+  # TODO: put this back if it turns out we do want MCP
+  # threads << Thread.new { bot.start_mcp_server }
 
   stopping = false
   Signal.trap("INT") do
@@ -214,6 +215,21 @@ in ["start"] # TODO: directory and bot token in args??
     bot.stop_mcp_server
   end
   threads.each(&:join)
+end
+
+case ARGV
+in ["test"]
+  bot = Bot.new
+  thread = bot.start_codex "Give me a bullet point list of 5 orange things" do |reply|
+    puts reply
+  end
+  thread.join
+
+in ["start"]
+  start.call Dir.pwd
+
+in ["start", dir]
+  start.call dir
 
 in ["pair", code]
   state = State.load
