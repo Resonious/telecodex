@@ -94,6 +94,8 @@ class Bot
       args = [
         "codex",
         "--dangerously-bypass-approvals-and-sandbox",
+        "--cd",
+        dir,
         "exec",
       ]
       if (last_session_id = @state.session_ids_per_dir[dir])
