@@ -3,7 +3,6 @@ require "telegram/bot"
 require "webrick"
 require "pty"
 require "securerandom"
-require "debug"
 
 STATE_PATH = "telecodex.state"
 
