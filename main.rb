@@ -102,7 +102,7 @@ class Bot
       end
       args << prompt
 
-      stdout, stdin, pid = *PTY.spawn(*args)
+      stdout, stdin, pid = *Dir.chdir(dir) { PTY.spawn(*args) }
       @codex_pid = pid
 
       lines = []
