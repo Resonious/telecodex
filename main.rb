@@ -135,6 +135,7 @@ class Bot
           when :collecting_codex_output
             if line.start_with?("\e")
               reply = codex_output.join.force_encoding("UTF-8")
+                .sub(/\n?^diff --git .*\z/m, "").rstrip
               first_reply ||= reply
               last_reply = reply
               block.call(reply) if first_reply == reply
