@@ -214,6 +214,9 @@ class Bot
   def initialize(dir = Dir.pwd)
     @state = State.load
     @dir = dir
+    Telegram::Bot.configure do |config|
+      config.connection_timeout = 300
+    end
   end
 
   def new_pairing_code
