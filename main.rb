@@ -1,8 +1,11 @@
 require "dotenv/load"
 require "telegram/bot"
 require "webrick"
+require "json"
 require "pty"
 require "securerandom"
+
+MCP_PORT = 4321
 
 STATE_PATH = "telecodex.state"
 
@@ -244,6 +247,8 @@ class Bot
           next
         end
 
+        @last_chat_id = chat_id
+
         Thread.new do
           loop do
             bot.api.send_chat_action(chat_id:, action: "typing")
@@ -266,11 +271,19 @@ class Bot
 
   def start_codex(prompt, &block)
     @codex_thread = Thread.new do
+      mcp_instructions = "You are chatting with a user over Telegram. " \
+        "You have a send_file MCP tool that delivers files directly to the user's Telegram chat as attachments. " \
+        "When the user asks to receive, see, or download any file, you MUST call the send_file tool with the absolute path. " \
+        "Do NOT paste a file path. The user has no access to the local filesystem and cannot open paths. " \
+        "The send_file tool is the ONLY way files can reach the user."
+
       args = [
         "codex",
         "--dangerously-bypass-approvals-and-sandbox",
         "--cd",
         dir,
+        "-c", "mcp_servers.telecodex.url=\"http://localhost:#{MCP_PORT}/mcp\"",
+        "-c", "instructions=\"#{mcp_instructions}\"",
         "exec",
       ]
       if (last_session_id = @state.session_ids_per_dir[dir])
@@ -359,23 +372,100 @@ class Bot
     end
   end
 
-  # NOTE: this was an idea from the beginning that turned out to not be necessary.
-  # For now, we can stream in all codex chats as Telegram chats without an MCP server.
-  #
-  # That said, the streaming is pretty noisy sometimes so might not be good for
-  # long running tasks.
   def start_mcp_server
-    mcp_server = WEBrick::HTTPServer.new(Port: 4321)
+    mcp_server = WEBrick::HTTPServer.new(Port: MCP_PORT, Logger: WEBrick::Log.new($stderr, WEBrick::Log::WARN))
 
     mcp_server.mount_proc "/mcp" do |req, res|
+      body = JSON.parse(req.body)
+      STDERR.puts "MCP << #{body["method"]} (id=#{body["id"]})"
+      result = handle_mcp_request(body)
+
+      if result
+        STDERR.puts "MCP >> #{result.to_json[0, 200]}"
+        res.status = 200
+        res["Content-Type"] = "application/json"
+        res.body = JSON.generate(result)
+      else
+        # Notifications (no id) get 202 with no body per streamable HTTP spec
+        res.status = 202
+      end
+    rescue => e
+      STDERR.puts "MCP error: #{e.class} #{e.message}"
       res.status = 200
-      res["Content-Type"] = "text/plain"
-      res.body = "Hello from WEBrick\n"
-      # TODO: respond to jsonrpc for list tools, and for tool call
+      res["Content-Type"] = "application/json"
+      res.body = JSON.generate({
+        jsonrpc: "2.0",
+        id: body&.dig("id"),
+        error: { code: -32603, message: e.message },
+      })
     end
 
     @mcp_server = mcp_server
     mcp_server.start
+  end
+
+  def handle_mcp_request(body)
+    id = body["id"]
+    case body["method"]
+    when "initialize"
+      {
+        jsonrpc: "2.0", id:,
+        result: {
+          protocolVersion: "2025-03-26",
+          capabilities: { tools: {} },
+          serverInfo: { name: "telecodex", version: "0.1.0" },
+        },
+      }
+    when "notifications/initialized"
+      nil
+    when "tools/list"
+      {
+        jsonrpc: "2.0", id:,
+        result: {
+          tools: [
+            {
+              name: "send_file",
+              description: "Deliver a file as a Telegram attachment to the user. This uploads the file directly into the chat so the user can download it on their device. You MUST use this tool whenever the user asks to receive, see, or download a file — do NOT paste a file path instead, because the user cannot access the local filesystem. The only way the user can get a file is through this tool.",
+              inputSchema: {
+                type: "object",
+                properties: {
+                  path: { type: "string", description: "Absolute local path to the file on disk (e.g. /home/dev/telecodex/output.png)" },
+                  caption: { type: "string", description: "Short caption shown alongside the file in Telegram" },
+                },
+                required: ["path"],
+              },
+            },
+          ],
+        },
+      }
+    when "tools/call"
+      handle_tool_call(id, body.dig("params", "name"), body.dig("params", "arguments") || {})
+    else
+      { jsonrpc: "2.0", id:, error: { code: -32601, message: "Unknown method: #{body["method"]}" } }
+    end
+  end
+
+  def handle_tool_call(id, name, arguments)
+    case name
+    when "send_file"
+      result = mcp_send_file(arguments["path"], arguments["caption"])
+      { jsonrpc: "2.0", id:, result: { content: [{ type: "text", text: result }] } }
+    else
+      { jsonrpc: "2.0", id:, result: { content: [{ type: "text", text: "Unknown tool: #{name}" }], isError: true } }
+    end
+  end
+
+  def mcp_send_file(path, caption = nil)
+    raise "No active Telegram chat" unless @last_chat_id
+    raise "Bot not initialized" unless @bot
+    raise "File not found: #{path}" unless File.exist?(path)
+
+    document = Faraday::Multipart::FilePart.new(path, "application/octet-stream")
+    params = { chat_id: @last_chat_id, document: document }
+    params[:caption] = caption if caption && !caption.empty?
+    @bot.api.send_document(**params)
+
+    "Sent #{File.basename(path)} to Telegram chat"
   end
 
   def stop_mcp_server
@@ -391,8 +481,7 @@ start = proc do |dir|
   bot = Bot.new(dir)
   threads = []
   threads << Thread.new { bot.start_telegram_bot }
-  # TODO: put this back if it turns out we do want MCP
-  # threads << Thread.new { bot.start_mcp_server }
+  threads << Thread.new { bot.start_mcp_server }
 
   stopping = false
   Signal.trap("INT") do
