@@ -288,6 +288,7 @@ class Bot
         "--cd",
         dir,
         "-c", "mcp_servers.telecodex.url=\"http://localhost:#{MCP_PORT}/mcp\"",
+        "-c", "mcp_servers.telecodex.tool_timeout_sec=600",
         "-c", "instructions=\"#{mcp_instructions}\"",
         "exec",
       ]
@@ -378,7 +379,7 @@ class Bot
   end
 
   def start_mcp_server
-    mcp_server = WEBrick::HTTPServer.new(Port: MCP_PORT, Logger: WEBrick::Log.new($stderr, WEBrick::Log::WARN))
+    mcp_server = WEBrick::HTTPServer.new(Port: MCP_PORT, Logger: WEBrick::Log.new($stderr, WEBrick::Log::WARN), RequestTimeout: 600)
 
     mcp_server.mount_proc "/mcp" do |req, res|
       body = JSON.parse(req.body)
