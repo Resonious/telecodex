@@ -222,8 +222,10 @@ class Bot
 
   def start_telegram_bot
     token = ENV.fetch("TELECODEX_BOT_TOKEN")
+    client_opts = {}
+    client_opts[:url] = ENV["TELECODEX_BOT_API_URL"] if ENV["TELECODEX_BOT_API_URL"]
 
-    Telegram::Bot::Client.run(token) do |bot|
+    Telegram::Bot::Client.run(token, client_opts) do |bot|
       @bot = bot
 
       bot.listen do |message|
