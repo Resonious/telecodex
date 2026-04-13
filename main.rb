@@ -102,7 +102,7 @@ class Bot
       end
       args << prompt
 
-      stdout, stdin, pid = *Dir.chdir(dir) { PTY.spawn(*args) }
+      stdout, stdin, pid = *PTY.spawn(*args)
       @codex_pid = pid
 
       lines = []
@@ -384,7 +384,7 @@ end
 ##########################################################
 
 start = proc do |dir|
-  bot = Bot.new
+  bot = Bot.new(dir)
   threads = []
   threads << Thread.new { bot.start_telegram_bot }
   # TODO: put this back if it turns out we do want MCP
