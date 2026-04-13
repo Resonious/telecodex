@@ -214,9 +214,6 @@ class Bot
   def initialize(dir = Dir.pwd)
     @state = State.load
     @dir = dir
-    Telegram::Bot.configure do |config|
-      config.connection_timeout = 300
-    end
   end
 
   def new_pairing_code
@@ -465,6 +462,8 @@ class Bot
     raise "No active Telegram chat" unless @last_chat_id
     raise "Bot not initialized" unless @bot
     raise "File not found: #{path}" unless File.exist?(path)
+
+    @bot.api.connection.options.timeout = 300
 
     document = Faraday::Multipart::FilePart.new(path, "application/octet-stream")
     params = { chat_id: @last_chat_id, document: document }
