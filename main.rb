@@ -222,6 +222,11 @@ class Bot
 
   def start_telegram_bot
     token = ENV.fetch("TELECODEX_BOT_TOKEN")
+    Telegram::Bot.configure do |config|
+      config.connection_timeout = 300
+      config.connection_open_timeout = 60
+    end
+
     client_opts = {}
     client_opts[:url] = ENV["TELECODEX_BOT_API_URL"] if ENV["TELECODEX_BOT_API_URL"]
 
@@ -462,8 +467,6 @@ class Bot
     raise "No active Telegram chat" unless @last_chat_id
     raise "Bot not initialized" unless @bot
     raise "File not found: #{path}" unless File.exist?(path)
-
-    @bot.api.connection.options.timeout = 300
 
     document = Faraday::Multipart::FilePart.new(path, "application/octet-stream")
     params = { chat_id: @last_chat_id, document: document }
